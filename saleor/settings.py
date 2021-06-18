@@ -33,8 +33,6 @@ def get_bool_from_env(name, default_value):
 
 DEBUG = get_bool_from_env("DEBUG", True)
 
-SITE_ID = 1
-
 PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
 ROOT_URLCONF = "saleor.urls"
@@ -63,10 +61,15 @@ INTERNAL_IPS = get_list(os.environ.get("INTERNAL_IPS", "127.0.0.1"))
 
 DATABASES = {
     "default": dj_database_url.config(
-        default="postgres://saleor:saleor@localhost:5432/saleor", conn_max_age=600
+        default="postgres://saleor:saleor@localhost:5432/saleor",
+        engine="django_tenants.postgresql_backend",
+        conn_max_age=600,
     )
 }
 
+DATABASE_ROUTERS = (
+    'django_tenants.routers.TenantSyncRouter',
+)
 
 TIME_ZONE = "UTC"
 LANGUAGE_CODE = "en"
@@ -175,6 +178,7 @@ STATICFILES_FINDERS = [
 ]
 
 context_processors = [
+    "django.template.context_processors.request",
     "django.template.context_processors.debug",
     "django.template.context_processors.media",
     "django.template.context_processors.static",
@@ -207,6 +211,7 @@ if not SECRET_KEY and DEBUG:
     SECRET_KEY = get_random_secret_key()
 
 MIDDLEWARE = [
+    "django_tenants.middleware.TenantSubfolderMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.common.CommonMiddleware",
     "saleor.core.middleware.request_time",
@@ -219,15 +224,33 @@ MIDDLEWARE = [
     "saleor.core.middleware.jwt_refresh_token_middleware",
 ]
 
-INSTALLED_APPS = [
+SHARED_APPS = [
+    "django_tenants",
+    # Applications containing the tenant model
+    "saleor.tenant",
     # External apps that need to go before django's
     "storages",
     # Django modules
     "django.contrib.contenttypes",
-    "django.contrib.sites",
     "django.contrib.staticfiles",
     "django.contrib.auth",
-    "django.contrib.postgres",
+    # External apps
+    "versatileimagefield",
+    "django_measurement",
+    "django_prices",
+    "django_prices_openexchangerates",
+    "django_prices_vatlayer",
+    "graphene_django",
+    "mptt",
+    "django_countries",
+    "django_filters",
+    "phonenumber_field",
+ ]
+
+
+TENANT_APPS = [
+    "django.contrib.contenttypes",
+    "django.contrib.sites",
     # Local apps
     "saleor.plugins",
     "saleor.account",
@@ -242,8 +265,8 @@ INSTALLED_APPS = [
     "saleor.order",
     "saleor.invoice",
     "saleor.seo",
-    "saleor.shipping",
     "saleor.site",
+    "saleor.shipping",
     "saleor.data_feeds",
     "saleor.page",
     "saleor.payment",
@@ -251,19 +274,13 @@ INSTALLED_APPS = [
     "saleor.webhook",
     "saleor.wishlist",
     "saleor.app",
-    # External apps
-    "versatileimagefield",
-    "django_measurement",
-    "django_prices",
-    "django_prices_openexchangerates",
-    "django_prices_vatlayer",
-    "graphene_django",
-    "mptt",
-    "django_countries",
-    "django_filters",
-    "phonenumber_field",
-]
+ ]
 
+TENANT_MODEL = "tenant.Tenant"
+TENANT_DOMAIN_MODEL = "tenant.Domain"
+TENANT_SUBFOLDER_PREFIX = "client"
+
+SITE_ID = 1
 
 ENABLE_DEBUG_TOOLBAR = get_bool_from_env("ENABLE_DEBUG_TOOLBAR", False)
 if ENABLE_DEBUG_TOOLBAR:
@@ -277,7 +294,7 @@ if ENABLE_DEBUG_TOOLBAR:
         )
         warnings.warn(msg)
     else:
-        INSTALLED_APPS += ["django.forms", "debug_toolbar", "graphiql_debug_toolbar"]
+        SHARED_APPS += ["django.forms", "debug_toolbar", "graphiql_debug_toolbar"]
         MIDDLEWARE.append("saleor.graphql.middleware.DebugToolbarMiddleware")
 
         DEBUG_TOOLBAR_PANELS = [
@@ -294,6 +311,11 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "root": {"level": "INFO", "handlers": ["default"]},
+    'filters': {
+        'require_debug_false': {
+            '()': 'django.utils.log.RequireDebugFalse'
+        }
+    },
     "formatters": {
         "django.server": {
             "()": "django.utils.log.ServerFormatter",
@@ -325,6 +347,11 @@ LOGGING = {
             "class": "logging.StreamHandler",
             "formatter": "django.server" if DEBUG else "json",
         },
+        'mail_admins': {
+            'level': 'ERROR',
+            'filters': ['require_debug_false'],
+            'class': 'django.utils.log.AdminEmailHandler'
+        }
     },
     "loggers": {
         "django": {"level": "INFO", "propagate": True},
@@ -332,6 +359,11 @@ LOGGING = {
             "handlers": ["django.server"],
             "level": "INFO",
             "propagate": False,
+        },
+        'django.request': {
+            'handlers': ['mail_admins'],
+            'level': 'ERROR',
+            'propagate': True,
         },
         "saleor": {"level": "DEBUG", "propagate": True},
         "saleor.graphql.errors.handled": {
@@ -379,10 +411,6 @@ def get_host():
     return Site.objects.get_current().domain
 
 
-PAYMENT_HOST = get_host
-
-PAYMENT_MODEL = "order.Payment"
-
 MAX_CHECKOUT_LINE_QUANTITY = int(os.environ.get("MAX_CHECKOUT_LINE_QUANTITY", 50))
 
 TEST_RUNNER = "saleor.tests.runner.PytestTestRunner"
@@ -390,7 +418,7 @@ TEST_RUNNER = "saleor.tests.runner.PytestTestRunner"
 
 PLAYGROUND_ENABLED = get_bool_from_env("PLAYGROUND_ENABLED", True)
 
-ALLOWED_HOSTS = get_list(os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1"))
+ALLOWED_HOSTS = get_list(os.environ.get("ALLOWED_HOSTS", ".localhost,127.0.0.1"))
 ALLOWED_GRAPHQL_ORIGINS = get_list(os.environ.get("ALLOWED_GRAPHQL_ORIGINS", "*"))
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -509,13 +537,6 @@ PLUGINS = [
     "saleor.plugins.avatax.plugin.AvataxPlugin",
     "saleor.plugins.vatlayer.plugin.VatlayerPlugin",
     "saleor.plugins.webhook.plugin.WebhookPlugin",
-    "saleor.payment.gateways.dummy.plugin.DummyGatewayPlugin",
-    "saleor.payment.gateways.dummy_credit_card.plugin.DummyCreditCardGatewayPlugin",
-    "saleor.payment.gateways.stripe.plugin.StripeGatewayPlugin",
-    "saleor.payment.gateways.braintree.plugin.BraintreeGatewayPlugin",
-    "saleor.payment.gateways.razorpay.plugin.RazorpayGatewayPlugin",
-    "saleor.payment.gateways.adyen.plugin.AdyenGatewayPlugin",
-    "saleor.payment.gateways.authorize_net.plugin.AuthorizeNetGatewayPlugin",
     "saleor.plugins.invoicing.plugin.InvoicingPlugin",
 ]
 
@@ -524,9 +545,12 @@ installed_plugins = pkg_resources.iter_entry_points("saleor.plugins")
 for entry_point in installed_plugins:
     plugin_path = "{}.{}".format(entry_point.module_name, entry_point.attrs[0])
     if plugin_path not in PLUGINS:
-        if entry_point.name not in INSTALLED_APPS:
-            INSTALLED_APPS.append(entry_point.name)
+        if entry_point.name not in TENANT_APPS:
+            TENANT_APPS.append(entry_point.name)
         PLUGINS.append(plugin_path)
+
+INSTALLED_APPS = list(SHARED_APPS) + \
+    [app for app in TENANT_APPS if app not in SHARED_APPS]
 
 if (
     not DEBUG

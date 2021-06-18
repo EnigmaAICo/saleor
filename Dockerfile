@@ -15,8 +15,6 @@ RUN pip install -r requirements_dev.txt
 ### Final image
 FROM python:3.8-slim
 
-RUN groupadd -r saleor && useradd -r -g saleor saleor
-
 RUN apt-get update \
   && apt-get install -y \
   libxml2 \
@@ -29,6 +27,8 @@ RUN apt-get update \
   mime-support \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r -g 1000 saleor && useradd -r -g saleor -u 1000 saleor
 
 RUN mkdir -p /app/media /app/static \
   && chown -R saleor:saleor /app/
